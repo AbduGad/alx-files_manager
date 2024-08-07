@@ -91,89 +91,52 @@ class FilesController {
     });
   }
 
-  /**
-   * Retrieves and returns a specific file based on the provided file ID.
-   *
-   * @param {Object} req - The request object.
-   * @param {Object} res - The response object.
-   * @return {Promise<Object>} A promise that resolves to the retrieved file object.
-   */
   static async getShow(req, res) {
-    const token = req.header('X-Token');
-    if (!token) {
-      return res.status(401).json({ error: 'Unauthorized' });
+    try {
+      const { id } = req.params;
+
+      // Ensure req.user is defined and contains userId
+      if (!req.user || !req.user.userId) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      const { userId } = req.user;
+
+      const file = await dbClient.db.collection('files').findOne({ _id: ObjectId(id), userId: ObjectId(userId) });
+
+      if (!file) {
+        return res.status(404).json({ error: 'Not found' });
+      }
+
+      return res.json(file);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: 'Internal Server Error' });
     }
-
-    const userId = await redisClient.get(`auth_${token}`);
-    if (!userId) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
-    const fileId = req.params.id;
-
-    if (!ObjectId.isValid(fileId)) {
-      return res.status(404).json({ error: 'Not found' });
-    }
-
-    const file = await dbClient.db.collection('files').findOne({
-      _id: new ObjectId(fileId),
-      userId,
-    });
-
-    if (!file) {
-      return res.status(404).json({ error: 'Not found' });
-    }
-
-    return res.status(200).json(file);
   }
 
-  /**
- * Retrieves a paginated list of files for a given user.
- *
- * @param {Object} req - The request object.
- * @param {Object} res - The response object.
- * @return {Promise<Object>} A promise that resolves to the response object.
- */
   static async getIndex(req, res) {
-    const token = req.header('X-Token');
-    if (!token) {
-      return res.status(401).json({ error: 'Unauthorized' });
+    try {
+      const { parentId = '0', page = '0' } = req.query;
+
+      // Ensure req.user is defined and contains userId
+      if (!req.user || !req.user.userId) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      const { userId } = req.user;
+
+      const files = await dbClient.db.collection('files').aggregate([
+        { $match: { parentId: ObjectId(parentId), userId: ObjectId(userId) } },
+        { $skip: parseInt(page, 10) * 20 },
+        { $limit: 20 },
+      ]).toArray();
+
+      return res.json(files);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: 'Internal Server Error' });
     }
-
-    const userId = await redisClient.get(`auth_${token}`);
-    if (!userId) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
-    const { parentId = '0', page = 0 } = req.query;
-    const limit = 20;
-    const skip = page * limit;
-
-    let parentObjectId;
-    if (parentId === '0') {
-      parentObjectId = 0;
-    } else if (ObjectId.isValid(parentId)) {
-      parentObjectId = new ObjectId(parentId);
-    } else {
-      return res.status(400).json({ error: 'Invalid parentId' });
-    }
-
-    const query = {
-      userId,
-      parentId: parentObjectId,
-    };
-
-    // console.log('Query:', query);
-
-    const files = await dbClient.db.collection('files')
-      .find(query)
-      .skip(skip)
-      .limit(limit)
-      .toArray();
-
-    // console.log('Files:', files);
-
-    return res.status(200).json(files);
   }
 
   /**
@@ -299,7 +262,6 @@ class FilesController {
 
       const fileStream = fs.createReadStream(filePath);
       fileStream.pipe(res);
-
     } catch (error) {
       console.error('Error while retrieving file:', error);
       return res.status(500).json({ error: 'Internal Server Error' });

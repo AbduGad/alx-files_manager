@@ -1,62 +1,65 @@
+// module that handles authentication token
+/* eslint-disable quote-props */
 import { v4 as uuidv4 } from 'uuid';
 import sha1 from 'sha1';
-import dbClient from '../utils/db';
 import redisClient from '../utils/redis';
+import dbClient from '../utils/db';
 
 class AuthController {
-  /**
-     * Async function to handle user authentication and token generation.
-     *
-     * @param {Object} req - The request object.
-     * @param {Object} res - The response object.
-     * @return {Object} The generated token upon successful authentication.
-     */
   static async getConnect(req, res) {
-    const authHeader = req.headers.authorization || '';
-    if (!authHeader.startsWith('Basic ')) {
-      return res.status(401).send({ message: 'Unauthorized' });
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith('Basic ')) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const credentialsBase64 = authHeader.slice('Basic '.length);
+      const credentials = Buffer.from(credentialsBase64, 'base64').toString('utf-8');
+      const [email, password] = credentials.split(':');
+
+      const user = await dbClient.client.db().collection('users').findOne({ email, password: sha1(password) });
+      if (!user) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const token = uuidv4();
+      const key = `auth_${token}`;
+
+      const expirationTimeInSeconds = 86400;
+      await redisClient.set(key, user._id.toString(), expirationTimeInSeconds);
+
+      res.status(200).json({ 'token': token });
+    } catch (error) {
+      console.error('Error in getConnect:', error);
+      res.status(500).json({ error: 'Internal Server Error' });
     }
-
-    const base64Credentials = authHeader.split(' ')[1];
-    const decodedCredentials = Buffer.from(base64Credentials, 'base64').toString('utf-8');
-    const [email, password] = decodedCredentials.split(':');
-
-    if (!email || !password) {
-      return res.status(401).send({ message: 'Unauthorized' });
-    }
-
-    const hashedPassword = sha1(password);
-    const userCollection = dbClient.db.collection('users');
-    const user = await userCollection.findOne({ email, password: hashedPassword });
-
-    if (!user) {
-      return res.status(401).send({ message: 'Unauthorized' });
-    }
-
-    const token = uuidv4();
-    const key = `auth_${token}`;
-    await redisClient.set(key, user._id.toString(), 24 * 60 * 60);
-    return res.status(200).json({ token });
   }
 
-  /**
-     * Disconnects the user associated with the provided token by deleting
-     * the corresponding Redis key.
-     *
-     * @param {Object} req - The request object containing the token in the 'x-token' header.
-     * @param {Object} res - The response object.
-     * @return {Promise<void>} A Promise that resolves when the user is successfully disconnected.
-     */
   static async getDisconnect(req, res) {
-    const token = await req.header('x-token');
-    const key = `auth_${token}`;
+    try {
+      const { 'x-token': token } = req.headers;
 
-    const userId = await redisClient.get(key);
-    if (userId) {
+      if (!token) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const key = `auth_${token}`;
+      const userId = await redisClient.get(key);
+
+      if (!userId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
       await redisClient.del(key);
+      res.status(204).end();
+    } catch (error) {
+      console.error('Error in getDisconnect:', error);
+      res.status(500).json({ error: 'Internal Server Error' });
     }
-
-    res.status(204).send();
   }
 }
 
